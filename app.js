@@ -3,7 +3,7 @@ import FileStateService from './service/fileStateService.js';
 const stateService = new FileStateService();
 
 // Flujo exitoso
-stateService.initializeFile('file-001', { filename: 'doc.pdf' });
+stateService.initializeFile('file-001', { filename: 'NEG20250902.txt' });
 stateService.markAsUploaded('file-001');
 stateService.startProcessing('file-001');
 stateService.markAsProcessed('file-001');
