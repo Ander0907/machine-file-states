@@ -1,208 +1,156 @@
-import { FILE_STATES, FILE_EVENTS, MAX_RETRIES } from "../helpers/constants.js";
+import FileJob from './fileJob.js';
+import FileState from './states/fileState.js';
+import { FILE_STATES } from '../helpers/constants.js';
 
-/**
- * Crea un nuevo contexto de archivo.
- * Estado inicial → PROCESSING
- */
-export function createNewFileJob({ id, metadata = {} }) {
-  const now = new Date().toISOString();
-  return {
-    id,
-    state: FILE_STATES.PROCESSING,
-    retryCount: 0,
-    metadata,
-    lastError: null,
-    history: [
-      {
-        from: null,
-        to: FILE_STATES.PROCESSING,
-        event: "INIT",
-        at: now,
-      },
-    ],
-  };
-}
-
-/**
- * Recibe:
- *  - fileJob: estado actual del archivo
- *  - event: { type, error? }
- *
- * Retorna:
- *  - el nuevo fileJob actualizado
- */
-export function transitionFileState(fileJob, event) {
-  const { state } = fileJob;
-
-  if (state === FILE_STATES.PROCESSED || state === FILE_STATES.REJECTED) {
-    return fileJob;
+class FileStateService {
+  constructor() {
+    this.jobs = new Map();
   }
 
-  switch (state) {
-    case FILE_STATES.AUTHORIZED:
-      return handleFromAuthorized(fileJob, event);
-    case FILE_STATES.UPLOADED:
-      return handleFromUploaded(fileJob, event);
-    case FILE_STATES.PROCESSING:
-      return handleFromProcessing(fileJob, event);
-    case FILE_STATES.ERROR:
-      return handleFromError(fileJob, event);
-    default:
-      return fileJob;
+  /**
+   * Crea un nuevo job de archivo
+   * @param {string} id - Identificador único
+   * @param {Object} metadata - Metadata del archivo
+   * @param {string} initialState - Estado inicial
+   * @returns {FileJob} Nueva instancia
+   */
+  createJob({ id, metadata = {}, initialState = FILE_STATES.PROCESSING }) {
+    const job = new FileJob({ id, metadata, initialState });
+    this.jobs.set(id, job);
+    return job;
   }
-}
 
-/**
- * AUTHORIZED → ...
- */
-function handleFromAuthorized(fileJob, event) {
-  switch (event.type) {
-    case FILE_EVENTS.FILE_UPLOADED:
-      return moveToState(fileJob, FILE_STATES.UPLOADED, event);
-    case FILE_EVENTS.BUSINESS_ERROR:
-      return moveToState(
-        { ...fileJob, lastError: event.error || null },
-        FILE_STATES.REJECTED,
-        event
-      );
-    case FILE_EVENTS.TECHNICAL_ERROR:
-      return moveToErrorOrReject(fileJob, event);
-    default:
-      return fileJob;
+  /**
+   * Obtiene un job por su ID
+   * @param {string} id - ID del job
+   * @returns {FileJob|undefined}
+   */
+  getJob(id) {
+    return this.jobs.get(id);
   }
-}
 
-/**
- * UPLOADED → ...
- */
-function handleFromUploaded(fileJob, event) {
-  switch (event.type) {
-    case FILE_EVENTS.START_PROCESSING:
-      return moveToState(fileJob, FILE_STATES.PROCESSING, event);
-    case FILE_EVENTS.BUSINESS_ERROR:
-      return moveToState(
-        { ...fileJob, lastError: event.error || null },
-        FILE_STATES.REJECTED,
-        event
-      );
-    case FILE_EVENTS.TECHNICAL_ERROR:
-      return moveToErrorOrReject(fileJob, event);
-    default:
-      return fileJob;
+  /**
+   * Verifica si una transición es válida
+   * @param {string} fromState - Estado origen
+   * @param {string} toState - Estado destino
+   * @returns {boolean}
+   */
+  canTransition(fromState, toState) {
+    const state = FileState.getStateByName(fromState);
+    return state.canTransitionTo(toState);
   }
-}
 
-/**
- * PROCESSING → ...
- */
-function handleFromProcessing(fileJob, event) {
-  switch (event.type) {
-    case FILE_EVENTS.PROCESSING_SUCCESS:
-      return moveToState(fileJob, FILE_STATES.PROCESSED, event);
-    case FILE_EVENTS.BUSINESS_ERROR:
-      return moveToState(
-        { ...fileJob, lastError: event.error || null },
-        FILE_STATES.REJECTED,
-        event
-      );
-    case FILE_EVENTS.TECHNICAL_ERROR:
-      return moveToErrorOrReject(fileJob, event);
-    default:
-      return fileJob;
-  }
-}
-
-/**
- * ERROR → RETRY o se queda igual
- */
-function handleFromError(fileJob, event) {
-  switch (event.type) {
-    case FILE_EVENTS.RETRY: {
-      const nextRetryCount = fileJob.retryCount + 1;
-
-      if (nextRetryCount > MAX_RETRIES) {
-        // Supera el máximo → REJECTED
-        return moveToState(
-          {
-            ...fileJob,
-            retryCount: nextRetryCount,
-            lastError: {
-              code: "MAX_RETRIES_REACHED",
-            },
-          },
-          FILE_STATES.REJECTED,
-          event
-        );
-      }
-
-      // Retry válido → vuelve a PROCESSING
-      return moveToState(
-        { ...fileJob, retryCount: nextRetryCount },
-        FILE_STATES.PROCESSING,
-        event
-      );
+  /**
+   * Procesa la subida de un archivo
+   * @param {FileJob} job - Job a procesar
+   * @returns {FileJob}
+   */
+  handleUpload(job) {
+    if (job.state === FILE_STATES.AUTHORIZED) {
+      job.transitionTo(FILE_STATES.UPLOADED, { reason: 'FILE_UPLOADED' });
     }
+    return job;
+  }
 
-    default:
-      return fileJob;
+  /**
+   * Inicia el procesamiento de un archivo
+   * @param {FileJob} job - Job a procesar
+   * @returns {FileJob}
+   */
+  startProcessing(job) {
+    if (job.state === FILE_STATES.UPLOADED) {
+      job.transitionTo(FILE_STATES.PROCESSING, { reason: 'START_PROCESSING' });
+    }
+    return job;
+  }
+
+  /**
+   * Marca un archivo como procesado exitosamente
+   * @param {FileJob} job - Job a marcar
+   * @returns {FileJob}
+   */
+  markAsProcessed(job) {
+    if (job.state === FILE_STATES.PROCESSING) {
+      job.transitionTo(FILE_STATES.PROCESSED, { reason: 'PROCESSING_SUCCESS' });
+    }
+    return job;
+  }
+
+  /**
+   * Maneja un error de negocio (irrecuperable)
+   * @param {FileJob} job - Job con error
+   * @param {Object} error - Detalles del error
+   * @returns {FileJob}
+   */
+  handleBusinessError(job, error) {
+    return job.applyBusinessError(error);
+  }
+
+  /**
+   * Maneja un error técnico (recuperable)
+   * @param {FileJob} job - Job con error
+   * @param {Object} error - Detalles del error
+   * @returns {FileJob}
+   */
+  handleTechnicalError(job, error) {
+    return job.applyTechnicalError(error);
+  }
+
+  /**
+   * Intenta reintentar un job en estado ERROR
+   * @param {FileJob} job - Job a reintentar
+   * @returns {FileJob}
+   */
+  retryJob(job) {
+    if (job.state === FILE_STATES.ERROR) {
+      job.retry();
+    }
+    return job;
+  }
+
+  /**
+   * Orquesta el flujo completo desde AUTHORIZED hasta PROCESSING
+   * @param {string} id - ID del archivo
+   * @param {Object} metadata - Metadata del archivo
+   * @returns {FileJob}
+   */
+  processFile({ id, metadata = {} }) {
+    const job = this.createJob({ 
+      id, 
+      metadata, 
+      initialState: FILE_STATES.AUTHORIZED 
+    });
+
+    this.handleUpload(job);
+    this.startProcessing(job);
+    
+    return job;
+  }
+
+  /**
+   * Elimina un job del almacén
+   * @param {string} id - ID del job
+   */
+  removeJob(id) {
+    this.jobs.delete(id);
+  }
+
+  /**
+   * Obtiene todos los jobs activos
+   * @returns {Array<FileJob>}
+   */
+  getAllJobs() {
+    return Array.from(this.jobs.values());
+  }
+
+  /**
+   * Obtiene jobs filtrados por estado
+   * @param {string} state - Estado a filtrar
+   * @returns {Array<FileJob>}
+   */
+  getJobsByState(state) {
+    return this.getAllJobs().filter(job => job.state === state);
   }
 }
 
-/**
- * Maneja errores técnicos recuperables.
- */
-function moveToErrorOrReject(fileJob, event) {
-  const nextRetryCount = fileJob.retryCount + 1;
-
-  const errorPayload = event.error || {
-    code: "TECH_ERROR",
-    message: "Technical error",
-  };
-
-  if (nextRetryCount > MAX_RETRIES) {
-    return moveToState(
-      {
-        ...fileJob,
-        retryCount: nextRetryCount,
-        lastError: {
-          ...errorPayload,
-          code: "MAX_RETRIES_REACHED",
-        },
-      },
-      FILE_STATES.REJECTED,
-      event
-    );
-  }
-
-  return moveToState(
-    {
-      ...fileJob,
-      retryCount: nextRetryCount,
-      lastError: errorPayload,
-    },
-    FILE_STATES.ERROR,
-    event
-  );
-}
-
-/**
- * Transición normal: actualiza estado e histórico.
- */
-function moveToState(fileJob, nextState, event) {
-  const now = new Date().toISOString();
-
-  return {
-    ...fileJob,
-    state: nextState,
-    history: [
-      ...fileJob.history,
-      {
-        from: fileJob.state,
-        to: nextState,
-        event: event.type,
-        at: now,
-        error: event.error || null,
-      },
-    ],
-  };
-}
+export default FileStateService;
