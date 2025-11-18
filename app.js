@@ -23,7 +23,7 @@ console.log('\n=== Ejemplo 2: Manejo de errores con reintentos ===\n');
 
 const job2 = service.createJob({
   id: 'file-456',
-  metadata: { filename: 'imagen.jpg' },
+  metadata: { filename: 'imagen.jpg', size: 2048 }, // ✅ Agregado size
   initialState: FILE_STATES.AUTHORIZED
 });
 
@@ -70,13 +70,13 @@ console.log('\n=== Ejemplo 4: Error de negocio (no recuperable) ===\n');
 
 const job3 = service.processFile({
   id: 'file-999',
-  metadata: { filename: 'corrupted.dat' }
+  metadata: { filename: 'data.pdf', size: 512 } // ✅ Extensión válida
 });
 
-// Error de negocio → va directo a REJECTED
+// Simular error de negocio durante el procesamiento
 service.handleBusinessError(job3, {
-  code: 'INVALID_FORMAT',
-  message: 'File format is not supported'
+  code: 'INVALID_DATA',
+  message: 'Data corruption detected during processing'
 });
 
 console.log('Estado después de business error:', job3.state); // REJECTED

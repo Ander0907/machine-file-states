@@ -1,4 +1,7 @@
 import { FILE_STATES, MAX_RETRIES } from '../../helpers/constants.js';
+import Logger from '../../helpers/logger.js';
+
+const logger = new Logger();
 
 class FileState {
   constructor(name) {
@@ -34,7 +37,22 @@ class FileState {
     });
   }
 
-  handleTechnicalError(context, error) {
+  handleTechnicalError(context, error, recoverable = true) {
+    // Si el error NO es recuperable, va directo a REJECTED
+    if (!recoverable) {
+      logger.warn('Non-recoverable technical error, moving to REJECTED', {
+        jobId: context.id,
+        error,
+        state: this.name
+      });
+      
+      return this.transitionTo(context, FILE_STATES.REJECTED, {
+        reason: 'NON_RECOVERABLE_TECHNICAL_ERROR',
+        error,
+      });
+    }
+    
+    // Error recuperable -> va a ERROR para posible reintento
     return this.transitionTo(context, FILE_STATES.ERROR, {
       reason: 'TECHNICAL_ERROR',
       error,
@@ -134,7 +152,27 @@ class ErrorState extends FileState {
   }
 
   retry(context) {
+    // Validar si los reintentos están habilitados
+    if (!context.retryEnabled) {
+      logger.warn('Retry attempt blocked - retries disabled', {
+        jobId: context.id,
+        retryCount: context.retryCount,
+        state: this.name
+      });
+      
+      // Permanecer en ERROR sin incrementar contador
+      throw new Error('Retries are disabled for this job');
+    }
+    
     const nextRetryCount = context.retryCount + 1;
+    
+    logger.info('Retry attempt', {
+      jobId: context.id,
+      retryCount: context.retryCount,
+      nextRetryCount,
+      maxRetries: MAX_RETRIES
+    });
+    
     context.retryCount = nextRetryCount;
 
     const reachedLimit = nextRetryCount >= MAX_RETRIES;
@@ -142,6 +180,14 @@ class ErrorState extends FileState {
       ? FILE_STATES.REJECTED
       : FILE_STATES.PROCESSING;
     const reason = reachedLimit ? 'MAX_RETRIES_REACHED' : 'RETRY';
+    
+    if (reachedLimit) {
+      logger.error('Max retries reached, moving to REJECTED', {
+        jobId: context.id,
+        retryCount: nextRetryCount,
+        maxRetries: MAX_RETRIES
+      });
+    }
 
     return this.transitionTo(context, nextState, { reason });
   }

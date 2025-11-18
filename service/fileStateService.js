@@ -1,10 +1,41 @@
 import FileJob from './fileJob.js';
 import FileState from './states/fileState.js';
 import { FILE_STATES } from '../helpers/constants.js';
+import Logger from '../helpers/logger.js';
+
+const logger = new Logger();
 
 class FileStateService {
   constructor() {
     this.jobs = new Map();
+    this.metrics = {
+      transitions: {},
+      errors: { business: 0, technical: 0 },
+      retries: 0,
+      created: 0,
+      completed: 0,
+      rejected: 0
+    };
+  }
+  
+  /**
+   * Hook para métricas - se llama en cada transición
+   */
+  _metricsHook(data) {
+    if (data.type === 'state_transition') {
+      const key = `${data.from}_to_${data.to}`;
+      this.metrics.transitions[key] = (this.metrics.transitions[key] || 0) + 1;
+      
+      if (data.to === FILE_STATES.PROCESSED) {
+        this.metrics.completed++;
+      } else if (data.to === FILE_STATES.REJECTED) {
+        this.metrics.rejected++;
+      }
+    } else if (data.type === 'business_error') {
+      this.metrics.errors.business++;
+    } else if (data.type === 'technical_error') {
+      this.metrics.errors.technical++;
+    }
   }
 
   /**
@@ -12,11 +43,33 @@ class FileStateService {
    * @param {string} id - Identificador único
    * @param {Object} metadata - Metadata del archivo
    * @param {string} initialState - Estado inicial
+   * @param {boolean} retryEnabled - Habilitar reintentos
    * @returns {FileJob} Nueva instancia
    */
-  createJob({ id, metadata = {}, initialState = FILE_STATES.PROCESSING }) {
-    const job = new FileJob({ id, metadata, initialState });
+  createJob({ 
+    id, 
+    metadata = {}, 
+    initialState = FILE_STATES.AUTHORIZED,
+    retryEnabled = true 
+  }) {
+    const job = new FileJob({ 
+      id, 
+      metadata, 
+      initialState,
+      retryEnabled,
+      metricsHook: this._metricsHook.bind(this)
+    });
+    
     this.jobs.set(id, job);
+    this.metrics.created++;
+    
+    logger.info('Job created by service', {
+      jobId: id,
+      initialState,
+      retryEnabled,
+      totalJobs: this.jobs.size
+    });
+    
     return job;
   }
 
@@ -41,14 +94,65 @@ class FileStateService {
   }
 
   /**
-   * Procesa la subida de un archivo
+   * Valida integridad del archivo
+   * @param {FileJob} job - Job a validar
+   * @returns {Object} Resultado de validación
+   */
+  validateIntegrity(job) {
+    const { metadata } = job;
+    
+    // Validaciones básicas de integridad
+    const validations = {
+      hasFilename: !!metadata.filename,
+      hasSize: metadata.size !== undefined && metadata.size > 0,
+      hasValidExtension: metadata.filename ? /\.(pdf|jpg|png|doc|docx)$/i.test(metadata.filename) : false
+    };
+    
+    const isValid = Object.values(validations).every(v => v);
+    
+    logger.info('Integrity validation', {
+      jobId: job.id,
+      validations,
+      isValid,
+      metadata
+    });
+    
+    return { isValid, validations };
+  }
+  
+  /**
+   * Procesa la subida de un archivo con validación de integridad
    * @param {FileJob} job - Job a procesar
    * @returns {FileJob}
    */
   handleUpload(job) {
-    if (job.state === FILE_STATES.AUTHORIZED) {
-      job.transitionTo(FILE_STATES.UPLOADED, { reason: 'FILE_UPLOADED' });
+    if (job.state !== FILE_STATES.AUTHORIZED) {
+      logger.warn('Upload attempted from invalid state', {
+        jobId: job.id,
+        currentState: job.state
+      });
+      return job;
     }
+    
+    // Validar integridad antes de permitir upload
+    const validation = this.validateIntegrity(job);
+    
+    if (!validation.isValid) {
+      logger.error('Integrity validation failed', {
+        jobId: job.id,
+        validations: validation.validations
+      });
+      
+      job.applyBusinessError({
+        code: 'INTEGRITY_VALIDATION_FAILED',
+        message: 'File integrity validation failed',
+        details: validation.validations
+      });
+      
+      return job;
+    }
+    
+    job.transitionTo(FILE_STATES.UPLOADED, { reason: 'FILE_UPLOADED' });
     return job;
   }
 
@@ -87,13 +191,20 @@ class FileStateService {
   }
 
   /**
-   * Maneja un error técnico (recuperable)
+   * Maneja un error técnico con clasificación de recuperabilidad
    * @param {FileJob} job - Job con error
    * @param {Object} error - Detalles del error
+   * @param {boolean} recoverable - Si el error es recuperable
    * @returns {FileJob}
    */
-  handleTechnicalError(job, error) {
-    return job.applyTechnicalError(error);
+  handleTechnicalError(job, error, recoverable = true) {
+    logger.info('Handling technical error', {
+      jobId: job.id,
+      error,
+      recoverable
+    });
+    
+    return job.applyTechnicalError(error, recoverable);
   }
 
   /**
@@ -151,6 +262,35 @@ class FileStateService {
   getJobsByState(state) {
     return this.getAllJobs().filter(job => job.state === state);
   }
+  
+  /**
+   * Obtiene métricas agregadas del servicio
+   * @returns {Object} Métricas
+   */
+  getMetrics() {
+    return {
+      ...this.metrics,
+      activeJobs: this.jobs.size,
+      byState: {
+        authorized: this.getJobsByState(FILE_STATES.AUTHORIZED).length,
+        uploaded: this.getJobsByState(FILE_STATES.UPLOADED).length,
+        processing: this.getJobsByState(FILE_STATES.PROCESSING).length,
+        processed: this.getJobsByState(FILE_STATES.PROCESSED).length,
+        rejected: this.getJobsByState(FILE_STATES.REJECTED).length,
+        error: this.getJobsByState(FILE_STATES.ERROR).length
+      }
+    };
+  }
+  
+  /**
+   * Registra las métricas en el log
+   */
+  logMetrics() {
+    const metrics = this.getMetrics();
+    logger.info('Service metrics', metrics);
+    return metrics;
+  }
 }
 
 export default FileStateService;
+export { FILE_STATES, FileJob, FileState };
