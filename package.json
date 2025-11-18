@@ -1,0 +1,19 @@
+{
+  "name": "machine-states",
+  "version": "1.0.0",
+  "description": "repositorio de prueba",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "prettier": "prettier --write \"**/*.js\"",
+    "lint": "eslint ."
+  },
+  "author": "Anderson Zapata",
+  "license": "ISC",
+  "dependencies": {
+    "winston": "3.18.3",
+    "prettier": "^2.8.8",
+    "eslint": "^9.34.0"
+  }
+}
