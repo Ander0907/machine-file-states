@@ -1,4 +1,4 @@
-import winston from "winston";
+import winston from 'winston';
 const { createLogger, format } = winston;
 
 const customFormat = format.printf(({ level, message }) => {
@@ -9,9 +9,7 @@ class Logger {
   constructor() {
     const transports = [
       new winston.transports.Console({
-        format: format.combine(
-          customFormat
-        ),
+        format: format.combine(customFormat),
       }),
     ];
     this.logger = createLogger({

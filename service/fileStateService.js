@@ -24,7 +24,7 @@ class FileStateService {
     const context = new FileContext(fileId, metadata);
     this.activeFiles.set(fileId, context);
     logger.info(`File ${fileId} initialized in ${FILE_STATES.AUTHORIZED} state`);
-    
+
     return context.getContextInfo();
   }
 
@@ -52,10 +52,10 @@ class FileStateService {
   markAsProcessed(fileId) {
     const context = this.getFileContext(fileId);
     context.transitionTo(FILE_STATES.PROCESSED);
-    
+
     // Remove from active files as it's in final state
     setTimeout(() => this.archiveFile(fileId), 0);
-    
+
     return context.getContextInfo();
   }
 
@@ -66,10 +66,10 @@ class FileStateService {
     const context = this.getFileContext(fileId);
     context.rejectionReason = reason;
     context.transitionTo(FILE_STATES.REJECTED);
-    
+
     // Remove from active files as it's in final state
     setTimeout(() => this.archiveFile(fileId), 0);
-    
+
     return context.getContextInfo();
   }
 
@@ -88,12 +88,12 @@ class FileStateService {
   retryFile(fileId) {
     const context = this.getFileContext(fileId);
     const success = context.retry();
-    
+
     if (!success) {
       // File was moved to REJECTED due to max retries
       setTimeout(() => this.archiveFile(fileId), 0);
     }
-    
+
     return context.getContextInfo();
   }
 
@@ -147,11 +147,11 @@ class FileStateService {
     if (this.activeFiles.has(fileId)) {
       const context = this.activeFiles.get(fileId);
       const finalState = context.getCurrentState();
-      
+
       if (![FILE_STATES.PROCESSED, FILE_STATES.REJECTED].includes(finalState)) {
         logger.warn(`Archiving file ${fileId} in non-final state: ${finalState}`);
       }
-      
+
       this.activeFiles.delete(fileId);
       logger.info(`File ${fileId} archived from state ${finalState}`);
     }

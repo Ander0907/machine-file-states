@@ -68,7 +68,7 @@ class AuthorizedState extends FileState {
     if (!this.canTransitionTo(nextState)) {
       throw new Error(`Invalid transition from ${this.stateName} to ${nextState}`);
     }
-    
+
     logger.info(`Transitioning from ${this.stateName} to ${nextState}. File: ${context.fileId}`);
     context.setState(nextState);
   }
@@ -96,7 +96,7 @@ class UploadedState extends FileState {
     if (!this.canTransitionTo(nextState)) {
       throw new Error(`Invalid transition from ${this.stateName} to ${nextState}`);
     }
-    
+
     logger.info(`Transitioning from ${this.stateName} to ${nextState}. File: ${context.fileId}`);
     context.setState(nextState);
   }
@@ -123,7 +123,7 @@ class ProcessingState extends FileState {
     if (!this.canTransitionTo(nextState)) {
       throw new Error(`Invalid transition from ${this.stateName} to ${nextState}`);
     }
-    
+
     logger.info(`Transitioning from ${this.stateName} to ${nextState}. File: ${context.fileId}`);
     context.setState(nextState);
   }
@@ -207,13 +207,15 @@ class ErrorState extends FileState {
     if (!this.canTransitionTo(nextState)) {
       throw new Error(`Invalid transition from ${this.stateName} to ${nextState}`);
     }
-    
+
     logger.info(`Transitioning from ${this.stateName} to ${nextState}. File: ${context.fileId}`);
     context.setState(nextState);
   }
 
   execute(context) {
-    logger.error(`Error state for file: ${context.fileId}. Retries: ${context.retryCount}/${MAX_RETRIES}. Error: ${context.errorMessage || 'Unknown'}`);
+    logger.error(
+      `Error state for file: ${context.fileId}. Retries: ${context.retryCount}/${MAX_RETRIES}. Error: ${context.errorMessage || 'Unknown'}`
+    );
   }
 
   canRetry() {
@@ -239,9 +241,9 @@ class FileContext {
       processing: 0,
       processed: 0,
       rejected: 0,
-      error: 0
+      error: 0,
     };
-    
+
     // Initialize with AUTHORIZED state
     this.currentState = new AuthorizedState();
     this.recordStateChange(FILE_STATES.AUTHORIZED);
@@ -252,7 +254,7 @@ class FileContext {
    */
   setState(stateName) {
     const previousState = this.currentState.getStateName();
-    
+
     switch (stateName) {
       case FILE_STATES.AUTHORIZED:
         this.currentState = new AuthorizedState();
@@ -275,7 +277,7 @@ class FileContext {
       default:
         throw new Error(`Unknown state: ${stateName}`);
     }
-    
+
     this.recordStateChange(stateName, previousState);
     this.logMetrics(stateName.toLowerCase());
     this.currentState.execute(this);
@@ -300,16 +302,16 @@ class FileContext {
    */
   handleError(errorMessage, isRecoverable = true) {
     this.errorMessage = errorMessage;
-    
+
     logger.error(`Error in file ${this.fileId}: ${errorMessage}. Recoverable: ${isRecoverable}`);
-    
+
     if (!isRecoverable) {
       // Error no recuperable - directamente a REJECTED
       this.rejectionReason = `Non-recoverable error: ${errorMessage}`;
       this.transitionTo(FILE_STATES.REJECTED);
       return;
     }
-    
+
     // Error recuperable - ir a estado ERROR
     this.transitionTo(FILE_STATES.ERROR);
   }
@@ -321,14 +323,14 @@ class FileContext {
     if (!this.currentState.canRetry()) {
       throw new Error(`Cannot retry from state: ${this.currentState.getStateName()}`);
     }
-    
+
     if (this.retryCount >= MAX_RETRIES) {
       logger.error(`Max retries reached for file ${this.fileId}. Moving to REJECTED state.`);
       this.rejectionReason = `Max retries (${MAX_RETRIES}) exceeded`;
       this.transitionTo(FILE_STATES.REJECTED);
       return false;
     }
-    
+
     this.retryCount++;
     logger.info(`Retrying file ${this.fileId}. Attempt: ${this.retryCount}/${MAX_RETRIES}`);
     this.transitionTo(FILE_STATES.PROCESSING);
@@ -344,9 +346,9 @@ class FileContext {
       previousState,
       newState,
       retryCount: this.retryCount,
-      metadata: { ...this.metadata }
+      metadata: { ...this.metadata },
     };
-    
+
     this.stateHistory.push(record);
     logger.info(`State change recorded: ${JSON.stringify(record)}`);
   }
@@ -387,21 +389,12 @@ class FileContext {
       errorMessage: this.errorMessage,
       rejectionReason: this.rejectionReason,
       stateHistory: this.stateHistory,
-      metrics: this.metrics
+      metrics: this.metrics,
     };
   }
 }
 
 // Export classes and factory function
-export {
-  FileState,
-  AuthorizedState,
-  UploadedState,
-  ProcessingState,
-  ProcessedState,
-  RejectedState,
-  ErrorState,
-  FileContext
-};
+export { FileState, AuthorizedState, UploadedState, ProcessingState, ProcessedState, RejectedState, ErrorState, FileContext };
 
 export default FileContext;

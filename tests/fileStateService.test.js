@@ -50,7 +50,7 @@ describe('FileState - State Machine Pattern', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.transitionTo(FILE_STATES.PROCESSED);
-      
+
       const history = fileContext.getStateHistory();
       assert.strictEqual(history.length, 4); // Initial + 3 transitions
       assert.strictEqual(history[history.length - 1].newState, FILE_STATES.PROCESSED);
@@ -93,11 +93,8 @@ describe('FileState - State Machine Pattern', () => {
     it('should not allow transitions from REJECTED state', () => {
       fileContext.rejectionReason = 'Duplicate file';
       fileContext.transitionTo(FILE_STATES.REJECTED);
-      
-      assert.throws(
-        () => fileContext.transitionTo(FILE_STATES.PROCESSING),
-        /Cannot transition from final state/
-      );
+
+      assert.throws(() => fileContext.transitionTo(FILE_STATES.PROCESSING), /Cannot transition from final state/);
     });
   });
 
@@ -106,7 +103,7 @@ describe('FileState - State Machine Pattern', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.handleError('Timeout', true);
-      
+
       const success = fileContext.retry();
       assert.strictEqual(success, true);
       assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.PROCESSING);
@@ -116,12 +113,12 @@ describe('FileState - State Machine Pattern', () => {
     it('should increment retry count on each retry', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
-      
+
       // First error and retry
       fileContext.handleError('Error 1', true);
       fileContext.retry();
       assert.strictEqual(fileContext.retryCount, 1);
-      
+
       // Second error and retry
       fileContext.handleError('Error 2', true);
       fileContext.retry();
@@ -131,17 +128,17 @@ describe('FileState - State Machine Pattern', () => {
     it('should reject file after MAX_RETRIES attempts', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
-      
+
       // Go through max retries: 3 successful retries, then 4th retry attempt should reject
       for (let i = 0; i < MAX_RETRIES; i++) {
         fileContext.handleError(`Error attempt ${i + 1}`, true);
         fileContext.retry(); // Retries 1, 2, 3 will work
       }
-      
+
       // Now cause one more error and try to retry - this should reject
       fileContext.handleError('Final error', true);
       const result = fileContext.retry(); // 4th retry attempt - should reject
-      
+
       assert.strictEqual(result, false);
       assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.REJECTED);
       assert.ok(fileContext.rejectionReason.includes('Max retries'));
@@ -151,48 +148,33 @@ describe('FileState - State Machine Pattern', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.transitionTo(FILE_STATES.PROCESSED);
-      
-      assert.throws(
-        () => fileContext.retry(),
-        /Cannot retry from state: PROCESSED/
-      );
+
+      assert.throws(() => fileContext.retry(), /Cannot retry from state: PROCESSED/);
     });
 
     it('should not allow retry from REJECTED state', () => {
       fileContext.rejectionReason = 'Duplicate';
       fileContext.transitionTo(FILE_STATES.REJECTED);
-      
-      assert.throws(
-        () => fileContext.retry(),
-        /Cannot retry from state: REJECTED/
-      );
+
+      assert.throws(() => fileContext.retry(), /Cannot retry from state: REJECTED/);
     });
   });
 
   describe('Invalid Transitions', () => {
     it('should not allow direct transition from AUTHORIZED to PROCESSING', () => {
-      assert.throws(
-        () => fileContext.transitionTo(FILE_STATES.PROCESSING),
-        /Invalid transition/
-      );
+      assert.throws(() => fileContext.transitionTo(FILE_STATES.PROCESSING), /Invalid transition/);
     });
 
     it('should not allow direct transition from AUTHORIZED to PROCESSED', () => {
-      assert.throws(
-        () => fileContext.transitionTo(FILE_STATES.PROCESSED),
-        /Invalid transition/
-      );
+      assert.throws(() => fileContext.transitionTo(FILE_STATES.PROCESSED), /Invalid transition/);
     });
 
     it('should not allow transition from PROCESSED to any state', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.transitionTo(FILE_STATES.PROCESSED);
-      
-      assert.throws(
-        () => fileContext.transitionTo(FILE_STATES.PROCESSING),
-        /Cannot transition from final state/
-      );
+
+      assert.throws(() => fileContext.transitionTo(FILE_STATES.PROCESSING), /Cannot transition from final state/);
     });
   });
 
@@ -201,7 +183,7 @@ describe('FileState - State Machine Pattern', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.transitionTo(FILE_STATES.PROCESSED);
-      
+
       const history = fileContext.getStateHistory();
       assert.strictEqual(history.length, 4);
       assert.strictEqual(history[0].newState, FILE_STATES.AUTHORIZED);
@@ -214,7 +196,7 @@ describe('FileState - State Machine Pattern', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.transitionTo(FILE_STATES.PROCESSED);
-      
+
       const metrics = fileContext.getMetrics();
       // Note: AUTHORIZED is not counted as it was the initial state
       assert.strictEqual(metrics.uploaded, 1);
@@ -229,7 +211,7 @@ describe('FileState - State Machine Pattern', () => {
       fileContext.transitionTo(FILE_STATES.PROCESSING);
       fileContext.handleError('Error', true);
       fileContext.retry();
-      
+
       const history = fileContext.getStateHistory();
       const lastEntry = history[history.length - 1];
       assert.strictEqual(lastEntry.retryCount, 1);
@@ -248,7 +230,7 @@ describe('FileState - State Machine Pattern', () => {
       fileService.markAsUploaded('file-2');
       fileService.startProcessing('file-2');
       const info = fileService.markAsProcessed('file-2');
-      
+
       assert.strictEqual(info.currentState, FILE_STATES.PROCESSED);
     });
 
@@ -256,10 +238,10 @@ describe('FileState - State Machine Pattern', () => {
       fileService.initializeFile('file-3');
       fileService.markAsUploaded('file-3');
       fileService.startProcessing('file-3');
-      
+
       let info = fileService.handleError('file-3', 'Timeout', true);
       assert.strictEqual(info.currentState, FILE_STATES.ERROR);
-      
+
       info = fileService.retryFile('file-3');
       assert.strictEqual(info.currentState, FILE_STATES.PROCESSING);
       assert.strictEqual(info.retryCount, 1);
@@ -269,17 +251,17 @@ describe('FileState - State Machine Pattern', () => {
       fileService.initializeFile('file-4');
       fileService.markAsUploaded('file-4');
       fileService.startProcessing('file-4');
-      
+
       // Do 3 successful retries
       for (let i = 0; i < MAX_RETRIES; i++) {
         fileService.handleError('file-4', `Error ${i}`, true);
         fileService.retryFile('file-4');
       }
-      
+
       // One more error and retry attempt - this should cause rejection
       fileService.handleError('file-4', 'Final error', true);
       fileService.retryFile('file-4');
-      
+
       const info = fileService.getFileInfo('file-4');
       assert.strictEqual(info.currentState, FILE_STATES.REJECTED);
     });
@@ -287,14 +269,14 @@ describe('FileState - State Machine Pattern', () => {
     it('should track multiple files independently', () => {
       fileService.initializeFile('file-5');
       fileService.initializeFile('file-6');
-      
+
       fileService.markAsUploaded('file-5');
       fileService.markAsUploaded('file-6');
       fileService.startProcessing('file-5');
-      
+
       const info5 = fileService.getFileInfo('file-5');
       const info6 = fileService.getFileInfo('file-6');
-      
+
       assert.strictEqual(info5.currentState, FILE_STATES.PROCESSING);
       assert.strictEqual(info6.currentState, FILE_STATES.UPLOADED);
     });
@@ -302,7 +284,7 @@ describe('FileState - State Machine Pattern', () => {
     it('should get all active files', () => {
       fileService.initializeFile('file-7');
       fileService.initializeFile('file-8');
-      
+
       const activeFiles = fileService.getAllActiveFiles();
       assert.strictEqual(activeFiles.length, 2);
     });
@@ -312,7 +294,7 @@ describe('FileState - State Machine Pattern', () => {
     it('should return complete context information', () => {
       fileContext.transitionTo(FILE_STATES.UPLOADED);
       const info = fileContext.getContextInfo();
-      
+
       assert.strictEqual(info.fileId, 'test-file-123');
       assert.strictEqual(info.currentState, FILE_STATES.UPLOADED);
       assert.strictEqual(info.retryCount, 0);

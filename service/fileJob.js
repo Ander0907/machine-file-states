@@ -39,7 +39,6 @@ class FileJob {
 
       logger.info(`File ${fileId} processed successfully!`);
       return { success: true, fileId };
-
     } catch (error) {
       logger.error(`Error in file job for ${fileId}: ${error.message}`);
       return { success: false, fileId, error: error.message };
@@ -73,15 +72,11 @@ class FileJob {
 
       while (!processed && attempt < 10) {
         attempt++;
-        
+
         if (attempt <= shouldFailAttempts) {
           // Simulate recoverable error
           logger.warn(`Processing attempt ${attempt} failed for file ${fileId}`);
-          this.fileStateService.handleError(
-            fileId,
-            `Timeout during processing attempt ${attempt}`,
-            true
-          );
+          this.fileStateService.handleError(fileId, `Timeout during processing attempt ${attempt}`, true);
           await this.simulateDelay(1000);
 
           // Retry
@@ -91,7 +86,6 @@ class FileJob {
             return { success: false, fileId, reason: 'Max retries exceeded' };
           }
           await this.simulateDelay(1500);
-
         } else {
           // Success on this attempt
           this.fileStateService.markAsProcessed(fileId);
@@ -101,7 +95,6 @@ class FileJob {
       }
 
       return { success: true, fileId, attempts: attempt };
-
     } catch (error) {
       logger.error(`Error in file job with retry for ${fileId}: ${error.message}`);
       return { success: false, fileId, error: error.message };
@@ -133,8 +126,12 @@ class FileJob {
       logger.warn(`Rejecting file ${fileId}: ${rejectionReason}`);
       this.fileStateService.rejectFile(fileId, rejectionReason);
 
-      return { success: false, fileId, rejected: true, reason: rejectionReason };
-
+      return {
+        success: false,
+        fileId,
+        rejected: true,
+        reason: rejectionReason,
+      };
     } catch (error) {
       logger.error(`Error in rejection job for ${fileId}: ${error.message}`);
       return { success: false, fileId, error: error.message };
@@ -171,7 +168,6 @@ class FileJob {
       );
 
       return { success: false, fileId, fatalError: true };
-
     } catch (error) {
       logger.error(`Error in fatal error job for ${fileId}: ${error.message}`);
       return { success: false, fileId, error: error.message };
@@ -182,7 +178,7 @@ class FileJob {
    * Helper to simulate async delay
    */
   simulateDelay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
