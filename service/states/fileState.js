@@ -75,7 +75,6 @@ class AuthorizedState extends FileState {
 
   execute(context) {
     logger.info(`Executing ${this.stateName} state for file: ${context.fileId}`);
-    // Note: metrics are logged in recordStateChange, not here
   }
 }
 
@@ -172,7 +171,6 @@ class RejectedState extends FileState {
   }
 
   canTransitionTo(nextState) {
-    // Estado final - no hay transiciones permitidas
     return false;
   }
 
@@ -206,6 +204,11 @@ class ErrorState extends FileState {
   transitionTo(context, nextState) {
     if (!this.canTransitionTo(nextState)) {
       throw new Error(`Invalid transition from ${this.stateName} to ${nextState}`);
+    }
+
+    if (nextState === FILE_STATES.PROCESSING && context.retryCount > MAX_RETRIES) {
+      logger.error(`Cannot transition to PROCESSING: max retries (${MAX_RETRIES}) exceeded for file ${context.fileId}`);
+      throw new Error(`Cannot transition to PROCESSING: max retries exceeded`);
     }
 
     logger.info(`Transitioning from ${this.stateName} to ${nextState}. File: ${context.fileId}`);
@@ -247,6 +250,7 @@ class FileContext {
     // Initialize with AUTHORIZED state
     this.currentState = new AuthorizedState();
     this.recordStateChange(FILE_STATES.AUTHORIZED);
+    this.logMetrics('authorized'); // Track initial state in metrics
   }
 
   /**
@@ -324,7 +328,7 @@ class FileContext {
       throw new Error(`Cannot retry from state: ${this.currentState.getStateName()}`);
     }
 
-    if (this.retryCount >= MAX_RETRIES) {
+    if (this.retryCount === MAX_RETRIES) {
       logger.error(`Max retries reached for file ${this.fileId}. Moving to REJECTED state.`);
       this.rejectionReason = `Max retries (${MAX_RETRIES}) exceeded`;
       this.transitionTo(FILE_STATES.REJECTED);
@@ -347,6 +351,8 @@ class FileContext {
       newState,
       retryCount: this.retryCount,
       metadata: { ...this.metadata },
+      errorMessage: this.errorMessage,
+      rejectionReason: this.rejectionReason,
     };
 
     this.stateHistory.push(record);
