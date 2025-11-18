@@ -1,160 +1,324 @@
-// tests/fileStateService.test.js
-// Escenarios de prueba para validar la implementación completa
+import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert';
+import FileContext from '../service/states/fileState.js';
+import FileStateService from '../service/fileStateService.js';
+import { FILE_STATES, MAX_RETRIES } from '../helpers/constants.js';
 
-import FileStateService, { FILE_STATES } from '../service/fileStateService.js';
+describe('FileState - State Machine Pattern', () => {
+  let fileContext;
+  let fileService;
 
-console.log('=== TESTS: File State Service ===\n');
-
-const service = new FileStateService();
-
-// Test 1: Transición inválida debe lanzar error
-console.log('Test 1: Transición inválida (REJECTED → PROCESSING)');
-try {
-  const job = service.createJob({ 
-    id: 'test-invalid', 
-    metadata: { filename: 'test.pdf', size: 100 },
-    initialState: FILE_STATES.REJECTED 
+  beforeEach(() => {
+    fileContext = new FileContext('test-file-123', { owner: 'test-user' });
+    fileService = new FileStateService();
   });
-  
-  job.transitionTo(FILE_STATES.PROCESSING, { reason: 'INVALID' });
-  console.log('❌ FAILED: Should have thrown error\n');
-} catch (error) {
-  console.log(`✅ PASSED: ${error.message}\n`);
-}
 
-// Test 2: Flujo completo con validación de integridad
-console.log('Test 2: Flujo completo AUTHORIZED → UPLOADED → PROCESSING → PROCESSED');
-const job2 = service.createJob({
-  id: 'test-full-flow',
-  metadata: { filename: 'document.pdf', size: 2048 }
+  describe('State Initialization', () => {
+    it('should initialize in AUTHORIZED state', () => {
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.AUTHORIZED);
+    });
+
+    it('should store file metadata', () => {
+      assert.deepStrictEqual(fileContext.metadata, { owner: 'test-user' });
+    });
+
+    it('should initialize retry count to 0', () => {
+      assert.strictEqual(fileContext.retryCount, 0);
+    });
+  });
+
+  describe('State Transitions - Happy Path', () => {
+    it('should transition from AUTHORIZED to UPLOADED', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.UPLOADED);
+    });
+
+    it('should transition from UPLOADED to PROCESSING', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.PROCESSING);
+    });
+
+    it('should transition from PROCESSING to PROCESSED', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.transitionTo(FILE_STATES.PROCESSED);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.PROCESSED);
+    });
+
+    it('should complete full lifecycle: AUTHORIZED → UPLOADED → PROCESSING → PROCESSED', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.transitionTo(FILE_STATES.PROCESSED);
+      
+      const history = fileContext.getStateHistory();
+      assert.strictEqual(history.length, 4); // Initial + 3 transitions
+      assert.strictEqual(history[history.length - 1].newState, FILE_STATES.PROCESSED);
+    });
+  });
+
+  describe('State Transitions - Error Path', () => {
+    it('should transition from AUTHORIZED to ERROR', () => {
+      fileContext.handleError('Authorization validation failed', true);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.ERROR);
+    });
+
+    it('should transition from UPLOADED to ERROR', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.handleError('S3 upload verification failed', true);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.ERROR);
+    });
+
+    it('should transition from PROCESSING to ERROR', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.handleError('Processing timeout', true);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.ERROR);
+    });
+  });
+
+  describe('State Transitions - Rejection Path', () => {
+    it('should transition from AUTHORIZED to REJECTED', () => {
+      fileContext.rejectionReason = 'Invalid permissions';
+      fileContext.transitionTo(FILE_STATES.REJECTED);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.REJECTED);
+    });
+
+    it('should reject directly on non-recoverable error', () => {
+      fileContext.handleError('File corrupted - integrity check failed', false);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.REJECTED);
+      assert.ok(fileContext.rejectionReason.includes('Non-recoverable error'));
+    });
+
+    it('should not allow transitions from REJECTED state', () => {
+      fileContext.rejectionReason = 'Duplicate file';
+      fileContext.transitionTo(FILE_STATES.REJECTED);
+      
+      assert.throws(
+        () => fileContext.transitionTo(FILE_STATES.PROCESSING),
+        /Cannot transition from final state/
+      );
+    });
+  });
+
+  describe('Retry Logic', () => {
+    it('should allow retry from ERROR state', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.handleError('Timeout', true);
+      
+      const success = fileContext.retry();
+      assert.strictEqual(success, true);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.PROCESSING);
+      assert.strictEqual(fileContext.retryCount, 1);
+    });
+
+    it('should increment retry count on each retry', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      
+      // First error and retry
+      fileContext.handleError('Error 1', true);
+      fileContext.retry();
+      assert.strictEqual(fileContext.retryCount, 1);
+      
+      // Second error and retry
+      fileContext.handleError('Error 2', true);
+      fileContext.retry();
+      assert.strictEqual(fileContext.retryCount, 2);
+    });
+
+    it('should reject file after MAX_RETRIES attempts', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      
+      // Go through max retries: 3 successful retries, then 4th retry attempt should reject
+      for (let i = 0; i < MAX_RETRIES; i++) {
+        fileContext.handleError(`Error attempt ${i + 1}`, true);
+        fileContext.retry(); // Retries 1, 2, 3 will work
+      }
+      
+      // Now cause one more error and try to retry - this should reject
+      fileContext.handleError('Final error', true);
+      const result = fileContext.retry(); // 4th retry attempt - should reject
+      
+      assert.strictEqual(result, false);
+      assert.strictEqual(fileContext.getCurrentState(), FILE_STATES.REJECTED);
+      assert.ok(fileContext.rejectionReason.includes('Max retries'));
+    });
+
+    it('should not allow retry from PROCESSED state', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.transitionTo(FILE_STATES.PROCESSED);
+      
+      assert.throws(
+        () => fileContext.retry(),
+        /Cannot retry from state: PROCESSED/
+      );
+    });
+
+    it('should not allow retry from REJECTED state', () => {
+      fileContext.rejectionReason = 'Duplicate';
+      fileContext.transitionTo(FILE_STATES.REJECTED);
+      
+      assert.throws(
+        () => fileContext.retry(),
+        /Cannot retry from state: REJECTED/
+      );
+    });
+  });
+
+  describe('Invalid Transitions', () => {
+    it('should not allow direct transition from AUTHORIZED to PROCESSING', () => {
+      assert.throws(
+        () => fileContext.transitionTo(FILE_STATES.PROCESSING),
+        /Invalid transition/
+      );
+    });
+
+    it('should not allow direct transition from AUTHORIZED to PROCESSED', () => {
+      assert.throws(
+        () => fileContext.transitionTo(FILE_STATES.PROCESSED),
+        /Invalid transition/
+      );
+    });
+
+    it('should not allow transition from PROCESSED to any state', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.transitionTo(FILE_STATES.PROCESSED);
+      
+      assert.throws(
+        () => fileContext.transitionTo(FILE_STATES.PROCESSING),
+        /Cannot transition from final state/
+      );
+    });
+  });
+
+  describe('State History and Metrics', () => {
+    it('should record all state changes in history', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.transitionTo(FILE_STATES.PROCESSED);
+      
+      const history = fileContext.getStateHistory();
+      assert.strictEqual(history.length, 4);
+      assert.strictEqual(history[0].newState, FILE_STATES.AUTHORIZED);
+      assert.strictEqual(history[1].newState, FILE_STATES.UPLOADED);
+      assert.strictEqual(history[2].newState, FILE_STATES.PROCESSING);
+      assert.strictEqual(history[3].newState, FILE_STATES.PROCESSED);
+    });
+
+    it('should track metrics for each state', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.transitionTo(FILE_STATES.PROCESSED);
+      
+      const metrics = fileContext.getMetrics();
+      // Note: AUTHORIZED is not counted as it was the initial state
+      assert.strictEqual(metrics.uploaded, 1);
+      assert.strictEqual(metrics.processing, 1);
+      assert.strictEqual(metrics.processed, 1);
+      assert.strictEqual(metrics.error, 0);
+      assert.strictEqual(metrics.rejected, 0);
+    });
+
+    it('should include retry count in state history', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      fileContext.transitionTo(FILE_STATES.PROCESSING);
+      fileContext.handleError('Error', true);
+      fileContext.retry();
+      
+      const history = fileContext.getStateHistory();
+      const lastEntry = history[history.length - 1];
+      assert.strictEqual(lastEntry.retryCount, 1);
+    });
+  });
+
+  describe('FileStateService Integration', () => {
+    it('should initialize a new file', () => {
+      const info = fileService.initializeFile('file-1', { owner: 'user-1' });
+      assert.strictEqual(info.currentState, FILE_STATES.AUTHORIZED);
+      assert.strictEqual(info.fileId, 'file-1');
+    });
+
+    it('should process file through complete lifecycle', () => {
+      fileService.initializeFile('file-2');
+      fileService.markAsUploaded('file-2');
+      fileService.startProcessing('file-2');
+      const info = fileService.markAsProcessed('file-2');
+      
+      assert.strictEqual(info.currentState, FILE_STATES.PROCESSED);
+    });
+
+    it('should handle error and retry', () => {
+      fileService.initializeFile('file-3');
+      fileService.markAsUploaded('file-3');
+      fileService.startProcessing('file-3');
+      
+      let info = fileService.handleError('file-3', 'Timeout', true);
+      assert.strictEqual(info.currentState, FILE_STATES.ERROR);
+      
+      info = fileService.retryFile('file-3');
+      assert.strictEqual(info.currentState, FILE_STATES.PROCESSING);
+      assert.strictEqual(info.retryCount, 1);
+    });
+
+    it('should reject file after max retries', () => {
+      fileService.initializeFile('file-4');
+      fileService.markAsUploaded('file-4');
+      fileService.startProcessing('file-4');
+      
+      // Do 3 successful retries
+      for (let i = 0; i < MAX_RETRIES; i++) {
+        fileService.handleError('file-4', `Error ${i}`, true);
+        fileService.retryFile('file-4');
+      }
+      
+      // One more error and retry attempt - this should cause rejection
+      fileService.handleError('file-4', 'Final error', true);
+      fileService.retryFile('file-4');
+      
+      const info = fileService.getFileInfo('file-4');
+      assert.strictEqual(info.currentState, FILE_STATES.REJECTED);
+    });
+
+    it('should track multiple files independently', () => {
+      fileService.initializeFile('file-5');
+      fileService.initializeFile('file-6');
+      
+      fileService.markAsUploaded('file-5');
+      fileService.markAsUploaded('file-6');
+      fileService.startProcessing('file-5');
+      
+      const info5 = fileService.getFileInfo('file-5');
+      const info6 = fileService.getFileInfo('file-6');
+      
+      assert.strictEqual(info5.currentState, FILE_STATES.PROCESSING);
+      assert.strictEqual(info6.currentState, FILE_STATES.UPLOADED);
+    });
+
+    it('should get all active files', () => {
+      fileService.initializeFile('file-7');
+      fileService.initializeFile('file-8');
+      
+      const activeFiles = fileService.getAllActiveFiles();
+      assert.strictEqual(activeFiles.length, 2);
+    });
+  });
+
+  describe('Context Information', () => {
+    it('should return complete context information', () => {
+      fileContext.transitionTo(FILE_STATES.UPLOADED);
+      const info = fileContext.getContextInfo();
+      
+      assert.strictEqual(info.fileId, 'test-file-123');
+      assert.strictEqual(info.currentState, FILE_STATES.UPLOADED);
+      assert.strictEqual(info.retryCount, 0);
+      assert.ok(info.metadata);
+      assert.ok(info.stateHistory);
+      assert.ok(info.metrics);
+    });
+  });
 });
-
-console.log('Estado inicial:', job2.state);
-service.handleUpload(job2);
-console.log('Después de upload:', job2.state);
-service.startProcessing(job2);
-console.log('Después de start:', job2.state);
-service.markAsProcessed(job2);
-console.log('Estado final:', job2.state);
-console.log(job2.state === FILE_STATES.PROCESSED ? '✅ PASSED\n' : '❌ FAILED\n');
-
-// Test 3: Validación de integridad falla → REJECTED
-console.log('Test 3: Validación de integridad falla');
-const job3 = service.createJob({
-  id: 'test-integrity-fail',
-  metadata: { filename: 'bad-file.exe', size: 0 } // extensión inválida y size 0
-});
-
-service.handleUpload(job3);
-console.log('Estado después de upload fallido:', job3.state);
-console.log(job3.state === FILE_STATES.REJECTED ? '✅ PASSED\n' : '❌ FAILED\n');
-
-// Test 4: Reintentos habilitados - 3 intentos → REJECTED
-console.log('Test 4: Límite de reintentos (3)');
-const job4 = service.createJob({
-  id: 'test-retry-limit',
-  metadata: { filename: 'retry.pdf', size: 1024 }
-});
-
-service.handleUpload(job4);
-service.startProcessing(job4);
-
-// Simular 3 errores técnicos y reintentos
-for (let i = 1; i <= 3; i++) {
-  service.handleTechnicalError(job4, { code: 'TIMEOUT', attempt: i });
-  console.log(`Intento ${i} - Estado:`, job4.state, '- Reintentos:', job4.retryCount);
-  
-  if (job4.state === FILE_STATES.ERROR) {
-    service.retryJob(job4);
-  }
-}
-
-console.log('Estado final después de 3 reintentos:', job4.state);
-console.log(job4.state === FILE_STATES.REJECTED ? '✅ PASSED: Max retries reached\n' : '❌ FAILED\n');
-
-// Test 5: Reintentos deshabilitados
-console.log('Test 5: Reintentos deshabilitados');
-const job5 = service.createJob({
-  id: 'test-retry-disabled',
-  metadata: { filename: 'no-retry.pdf', size: 1024 },
-  retryEnabled: false
-});
-
-service.handleUpload(job5);
-service.startProcessing(job5);
-service.handleTechnicalError(job5, { code: 'DB_ERROR' });
-
-console.log('Estado después de error:', job5.state);
-
-try {
-  service.retryJob(job5);
-  console.log('❌ FAILED: Should have thrown error\n');
-} catch (error) {
-  console.log(`✅ PASSED: ${error.message}\n`);
-}
-
-// Test 6: Error técnico no recuperable → REJECTED directo
-console.log('Test 6: Error técnico no recuperable');
-const job6 = service.createJob({
-  id: 'test-non-recoverable',
-  metadata: { filename: 'fatal.pdf', size: 1024 }
-});
-
-service.handleUpload(job6);
-service.startProcessing(job6);
-service.handleTechnicalError(job6, { code: 'FATAL_ERROR' }, false); // recoverable=false
-
-console.log('Estado después de error no recuperable:', job6.state);
-console.log(job6.state === FILE_STATES.REJECTED ? '✅ PASSED\n' : '❌ FAILED\n');
-
-// Test 7: handleTechnicalError en PROCESSED lanza excepción
-console.log('Test 7: Error en estado PROCESSED debe lanzar excepción');
-const job7 = service.createJob({
-  id: 'test-error-in-processed',
-  metadata: { filename: 'complete.pdf', size: 1024 }
-});
-
-service.handleUpload(job7);
-service.startProcessing(job7);
-service.markAsProcessed(job7);
-
-try {
-  service.handleTechnicalError(job7, { code: 'UNEXPECTED' });
-  console.log('❌ FAILED: Should have thrown error\n');
-} catch (error) {
-  console.log(`✅ PASSED: ${error.message}\n`);
-}
-
-// Test 8: Error de negocio desde cualquier estado
-console.log('Test 8: Error de negocio en PROCESSING → REJECTED');
-const job8 = service.createJob({
-  id: 'test-business-error',
-  metadata: { filename: 'business-fail.pdf', size: 1024 }
-});
-
-service.handleUpload(job8);
-service.startProcessing(job8);
-service.handleBusinessError(job8, { code: 'INVALID_DATA', message: 'Data corruption' });
-
-console.log('Estado después de business error:', job8.state);
-console.log(job8.state === FILE_STATES.REJECTED ? '✅ PASSED\n' : '❌ FAILED\n');
-
-// Test 9: Métricas del servicio
-console.log('Test 9: Métricas del servicio');
-const metrics = service.getMetrics();
-console.log('Métricas:', JSON.stringify(metrics, null, 2));
-console.log(metrics.created >= 8 ? '✅ PASSED: Metrics tracking\n' : '❌ FAILED\n');
-
-// Test 10: Estado inicial por defecto es AUTHORIZED
-console.log('Test 10: Estado inicial por defecto');
-const job10 = service.createJob({
-  id: 'test-default-state',
-  metadata: { filename: 'default.pdf', size: 1024 }
-});
-
-console.log('Estado inicial sin especificar:', job10.state);
-console.log(job10.state === FILE_STATES.AUTHORIZED ? '✅ PASSED\n' : '❌ FAILED\n');
-
-// Resumen final
-console.log('=== RESUMEN DE TESTS ===');
-service.logMetrics();

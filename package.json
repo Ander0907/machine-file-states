@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node app.js",
+    "test": "node --test tests/fileStateService.test.js",
+    "demo": "node examples/demo.js",
     "prettier": "prettier --write \"**/*.js\"",
     "lint": "eslint ."
   },

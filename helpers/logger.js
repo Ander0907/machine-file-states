@@ -1,9 +1,8 @@
 import winston from "winston";
 const { createLogger, format } = winston;
 
-const customFormat = format.printf(({ level, message, timestamp, ...meta }) => {
-  const metaStr = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : '';
-  return `[${timestamp}] ${level.toUpperCase()} - ${message}${metaStr}`;
+const customFormat = format.printf(({ level, message }) => {
+  return `[${level.toUpperCase()}] - ${message}`;
 });
 
 class Logger {
@@ -11,7 +10,6 @@ class Logger {
     const transports = [
       new winston.transports.Console({
         format: format.combine(
-          format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
           customFormat
         ),
       }),
@@ -21,20 +19,20 @@ class Logger {
     });
   }
 
-  info(message, meta = {}) {
-    this.logger.info(message, meta);
+  info(message) {
+    this.logger.info(message);
   }
 
-  error(message, meta = {}) {
-    this.logger.error(message, meta);
+  error(message) {
+    this.logger.error(message);
   }
 
-  warn(message, meta = {}) {
-    this.logger.warn(message, meta);
+  warn(message) {
+    this.logger.warn(message);
   }
 
-  debug(message, meta = {}) {
-    this.logger.debug(message, meta);
+  debug(message) {
+    this.logger.debug(message);
   }
 }
 

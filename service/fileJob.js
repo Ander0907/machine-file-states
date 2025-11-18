@@ -1,153 +1,188 @@
-import FileState from './states/fileState.js';
-import { FILE_STATES } from '../helpers/constants.js';
+import FileStateService from './fileStateService.js';
 import Logger from '../helpers/logger.js';
 
 const logger = new Logger();
 
+/**
+ * Simulates a file processing job
+ * Demonstrates the complete lifecycle of a file through the state machine
+ */
 class FileJob {
-  constructor({ 
-    id, 
-    metadata = {}, 
-    initialState = FILE_STATES.AUTHORIZED, // Cambiado: fuerza flujo completo
-    retryEnabled = true,
-    metricsHook = null 
-  }) {
-    this.id = id;
-    this.metadata = metadata;
-    this.retryCount = 0;
-    this.retryEnabled = retryEnabled;
-    this.lastError = null;
-    this.history = [];
-    this.metricsHook = metricsHook; // Hook para métricas externas
-    
-    this.currentState = FileState.getStateByName(initialState);
-    this.addToHistory(null, initialState, 'INIT');
-    
-    logger.info('FileJob created', {
-      jobId: this.id,
-      initialState,
-      metadata: this.metadata
-    });
+  constructor(fileStateService) {
+    this.fileStateService = fileStateService || new FileStateService();
   }
 
-  get state() {
-    return this.currentState.name;
-  }
+  /**
+   * Processes a file through its complete lifecycle
+   */
+  async processFile(fileId, metadata = {}) {
+    try {
+      logger.info(`Starting file processing job for: ${fileId}`);
 
-  _setState(stateObject, meta = {}) {
-    const previousStateName = this.currentState.name;
-    const newStateName = stateObject.name;
-    
-    this.currentState = stateObject;
-    this.addToHistory(previousStateName, newStateName, meta.reason, meta);
-    
-    // Log estructurado de transición
-    const logMeta = {
-      jobId: this.id,
-      transition: `${previousStateName} → ${newStateName}`,
-      reason: meta.reason,
-      retryCount: this.retryCount,
-      metadata: this.metadata
-    };
-    
-    if (meta.error) {
-      logMeta.error = meta.error;
-      logger.error(`State transition with error`, logMeta);
-    } else {
-      logger.info(`State transition`, logMeta);
-    }
-    
-    // Emitir métricas si hay hook configurado
-    if (this.metricsHook) {
-      this.metricsHook({
-        type: 'state_transition',
-        jobId: this.id,
-        from: previousStateName,
-        to: newStateName,
-        reason: meta.reason,
-        timestamp: new Date().toISOString()
-      });
+      // Step 1: Initialize file (AUTHORIZED state)
+      this.fileStateService.initializeFile(fileId, metadata);
+      await this.simulateDelay(500);
+
+      // Step 2: Upload to S3 (UPLOADED state)
+      logger.info(`Uploading file ${fileId} to S3...`);
+      this.fileStateService.markAsUploaded(fileId);
+      await this.simulateDelay(1000);
+
+      // Step 3: Start processing (PROCESSING state)
+      logger.info(`Starting processing for file ${fileId}...`);
+      this.fileStateService.startProcessing(fileId);
+      await this.simulateDelay(1500);
+
+      // Step 4: Complete processing (PROCESSED state)
+      logger.info(`Completing processing for file ${fileId}...`);
+      this.fileStateService.markAsProcessed(fileId);
+
+      logger.info(`File ${fileId} processed successfully!`);
+      return { success: true, fileId };
+
+    } catch (error) {
+      logger.error(`Error in file job for ${fileId}: ${error.message}`);
+      return { success: false, fileId, error: error.message };
     }
   }
 
-  addToHistory(from, to, reason, meta = {}) {
-    const historyEntry = {
-      from,
-      to,
-      at: new Date().toISOString(),
-      reason,
-      ...meta,
-    };
-    this.history.push(historyEntry);
-  }
+  /**
+   * Processes a file with simulated error and retry logic
+   */
+  async processFileWithRetry(fileId, metadata = {}, shouldFailAttempts = 1) {
+    try {
+      logger.info(`Starting file processing job with retry for: ${fileId}`);
 
-  canTransitionTo(targetState) {
-    return this.currentState.canTransitionTo(targetState);
-  }
+      // Step 1: Initialize file
+      this.fileStateService.initializeFile(fileId, metadata);
+      await this.simulateDelay(500);
 
-  transitionTo(targetState, meta = {}) {
-    return this.currentState.transitionTo(this, targetState, meta);
-  }
+      // Step 2: Upload to S3
+      logger.info(`Uploading file ${fileId} to S3...`);
+      this.fileStateService.markAsUploaded(fileId);
+      await this.simulateDelay(1000);
 
-  applyBusinessError(error) {
-    this.lastError = error;
-    
-    logger.error('Business error applied', {
-      jobId: this.id,
-      currentState: this.state,
-      error,
-      metadata: this.metadata
-    });
-    
-    if (this.metricsHook) {
-      this.metricsHook({
-        type: 'business_error',
-        jobId: this.id,
-        error,
-        timestamp: new Date().toISOString()
-      });
+      // Step 3: Start processing
+      logger.info(`Starting processing for file ${fileId}...`);
+      this.fileStateService.startProcessing(fileId);
+      await this.simulateDelay(1000);
+
+      // Simulate processing with errors
+      let attempt = 0;
+      let processed = false;
+
+      while (!processed && attempt < 10) {
+        attempt++;
+        
+        if (attempt <= shouldFailAttempts) {
+          // Simulate recoverable error
+          logger.warn(`Processing attempt ${attempt} failed for file ${fileId}`);
+          this.fileStateService.handleError(
+            fileId,
+            `Timeout during processing attempt ${attempt}`,
+            true
+          );
+          await this.simulateDelay(1000);
+
+          // Retry
+          const info = this.fileStateService.retryFile(fileId);
+          if (info.currentState === 'REJECTED') {
+            logger.error(`File ${fileId} rejected after max retries`);
+            return { success: false, fileId, reason: 'Max retries exceeded' };
+          }
+          await this.simulateDelay(1500);
+
+        } else {
+          // Success on this attempt
+          this.fileStateService.markAsProcessed(fileId);
+          processed = true;
+          logger.info(`File ${fileId} processed successfully after ${attempt} attempts!`);
+        }
+      }
+
+      return { success: true, fileId, attempts: attempt };
+
+    } catch (error) {
+      logger.error(`Error in file job with retry for ${fileId}: ${error.message}`);
+      return { success: false, fileId, error: error.message };
     }
-    
-    return this.currentState.handleBusinessError(this, error);
   }
 
-  applyTechnicalError(error, recoverable = true) {
-    this.lastError = error;
-    
-    logger.warn('Technical error applied', {
-      jobId: this.id,
-      currentState: this.state,
-      error,
-      recoverable,
-      metadata: this.metadata
-    });
-    
-    if (this.metricsHook) {
-      this.metricsHook({
-        type: 'technical_error',
-        jobId: this.id,
-        error,
-        recoverable,
-        timestamp: new Date().toISOString()
-      });
+  /**
+   * Processes a file that will be rejected
+   */
+  async processFileWithRejection(fileId, metadata = {}, rejectionReason = 'Invalid metadata') {
+    try {
+      logger.info(`Starting file processing job (will reject): ${fileId}`);
+
+      // Step 1: Initialize file
+      this.fileStateService.initializeFile(fileId, metadata);
+      await this.simulateDelay(500);
+
+      // Step 2: Upload to S3
+      logger.info(`Uploading file ${fileId} to S3...`);
+      this.fileStateService.markAsUploaded(fileId);
+      await this.simulateDelay(1000);
+
+      // Step 3: Start processing
+      logger.info(`Starting processing for file ${fileId}...`);
+      this.fileStateService.startProcessing(fileId);
+      await this.simulateDelay(1000);
+
+      // Step 4: Reject file
+      logger.warn(`Rejecting file ${fileId}: ${rejectionReason}`);
+      this.fileStateService.rejectFile(fileId, rejectionReason);
+
+      return { success: false, fileId, rejected: true, reason: rejectionReason };
+
+    } catch (error) {
+      logger.error(`Error in rejection job for ${fileId}: ${error.message}`);
+      return { success: false, fileId, error: error.message };
     }
-    
-    return this.currentState.handleTechnicalError(this, error, recoverable);
   }
 
-  retry() {
-    return this.currentState.retry(this);
+  /**
+   * Processes a file with non-recoverable error
+   */
+  async processFileWithFatalError(fileId, metadata = {}) {
+    try {
+      logger.info(`Starting file processing job (fatal error): ${fileId}`);
+
+      // Step 1: Initialize file
+      this.fileStateService.initializeFile(fileId, metadata);
+      await this.simulateDelay(500);
+
+      // Step 2: Upload to S3
+      logger.info(`Uploading file ${fileId} to S3...`);
+      this.fileStateService.markAsUploaded(fileId);
+      await this.simulateDelay(1000);
+
+      // Step 3: Start processing
+      logger.info(`Starting processing for file ${fileId}...`);
+      this.fileStateService.startProcessing(fileId);
+      await this.simulateDelay(1000);
+
+      // Step 4: Non-recoverable error
+      logger.error(`Fatal error for file ${fileId}`);
+      this.fileStateService.handleError(
+        fileId,
+        'Data integrity check failed - file corrupted',
+        false // Non-recoverable
+      );
+
+      return { success: false, fileId, fatalError: true };
+
+    } catch (error) {
+      logger.error(`Error in fatal error job for ${fileId}: ${error.message}`);
+      return { success: false, fileId, error: error.message };
+    }
   }
 
-  toJSON() {
-    return {
-      id: this.id,
-      state: this.state,
-      retryCount: this.retryCount,
-      metadata: this.metadata,
-      lastError: this.lastError,
-      history: this.history,
-    };
+  /**
+   * Helper to simulate async delay
+   */
+  simulateDelay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
